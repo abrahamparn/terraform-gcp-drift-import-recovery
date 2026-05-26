@@ -1,0 +1,120 @@
+name: Terraform Drift Detection
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 23 * * *"
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+concurrency:
+  group: terraform-drift-detection
+  cancel-in-progress: false
+
+jobs:
+  drift-detection:
+    name: Terraform Drift Detection
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ${{ vars.TF_WORKING_DIR }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ vars.TF_VERSION }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Terraform init
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Terraform drift plan
+        id: drift_plan
+        shell: bash
+        run: |
+          set +e
+
+          terraform plan \
+            -input=false \
+            -no-color \
+            -detailed-exitcode \
+            -var-file=environments/dev.tfvars \
+            -out=tfplan > drift-plan.txt
+
+          EXIT_CODE=$?
+          echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+
+          terraform show -no-color tfplan >> drift-plan.txt 2>/dev/null || true
+
+          if [[ "${EXIT_CODE}" -eq 0 ]]; then
+            echo "No drift detected."
+            exit 0
+          elif [[ "${EXIT_CODE}" -eq 2 ]]; then
+            echo "Drift detected."
+            exit 0
+          else
+            echo "Terraform plan failed."
+            exit 1
+          fi
+
+      - name: Upload drift plan artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-plan-${{ github.run_id }}
+          path: ${{ vars.TF_WORKING_DIR }}/drift-plan.txt
+          retention-days: 14
+
+      - name: Create GitHub issue when drift is detected
+        if: steps.drift_plan.outputs.exit_code == '2'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          ISSUE_TITLE="Terraform drift detected - $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          cat > drift-issue-body.md <<EOF
+          ## Terraform Drift Detected
+
+          The scheduled drift detection workflow found differences between Terraform configuration/state and real Google Cloud infrastructure.
+
+          ## Workflow Run
+
+          ${RUN_URL}
+
+          ## What to do next
+
+          1. Download the drift plan artifact from the workflow run.
+          2. Review whether the drift was intentional or accidental.
+          3. If accidental, revert the drift using Terraform apply.
+          4. If intentional, update Terraform code or import/reconcile state.
+          5. Close this issue only after drift is resolved and the plan returns exit code 0.
+
+          ## Rule
+
+          Do not manually fix the infrastructure without updating Terraform code or state.
+          EOF
+
+          gh issue create \
+            --title "${ISSUE_TITLE}" \
+            --body-file drift-issue-body.md \
+            --label "drift,terraform,incident"
