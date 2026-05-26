@@ -41,6 +41,33 @@ jobs:
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
 
+      - name: Write Terraform backend config
+        shell: bash
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${TF_STATE_BUCKET}" ]]; then
+            echo "TF_STATE_BUCKET repository variable is required." >&2
+            exit 1
+          fi
+
+          if [[ -z "${TF_STATE_PREFIX}" ]]; then
+            echo "TF_STATE_PREFIX repository variable is required." >&2
+            exit 1
+          fi
+
+          cat > backend.tf <<EOF
+          terraform {
+            backend "gcs" {
+              bucket = "${TF_STATE_BUCKET}"
+              prefix = "${TF_STATE_PREFIX}"
+            }
+          }
+          EOF
+
       - name: Terraform init
         run: terraform init -input=false
 
