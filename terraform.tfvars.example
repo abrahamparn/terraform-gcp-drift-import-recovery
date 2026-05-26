@@ -1,0 +1,10 @@
+project_id = "your-gcp-project-id"
+region = "asia-southeast2"
+environment = "dev"
+name_prefix = "drift-lab"
+network_name = "network"
+subnet_name = "app-subnet"
+subnet_cidr = "10.90.1.0/24"
+firewall_source_ranges = ["10.90.0.0/16"]
+firewall_allowed_ports = ["80"]
+drift_test_label = "managed"
